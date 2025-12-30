@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase/server";
-import { triggerMatchFound, triggerQueued } from "@/lib/pusher/server";
+import { triggerMatchFound, triggerQueued, triggerRoundStart } from "@/lib/pusher/server";
 
 export async function POST(req: NextRequest) {
   try {
@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
         .from("games")
         .update({
           player2_id: player2UserId,
-          status: "playing",
+          status: "in_progress",
         })
         .eq("id", waitingGame.id);
 
@@ -133,6 +133,15 @@ export async function POST(req: NextRequest) {
         gameId: waitingGame.id,
         opponent: player1User?.wallet_address || "",
         stake,
+      });
+
+      // Trigger round start for first round
+      await triggerRoundStart(waitingGame.id, {
+        roundNumber: 1,
+        score: {
+          player1: 0,
+          player2: 0,
+        },
       });
 
       return NextResponse.json({

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase/server";
-import { triggerRoundResult, triggerMoveReceived } from "@/lib/pusher/server";
+import { triggerRoundResult, triggerMoveReceived, triggerRoundStart } from "@/lib/pusher/server";
 
 function determineWinner(
   move1: string,
@@ -114,13 +114,15 @@ export async function POST(req: NextRequest) {
       }
 
       // Update game in DB
+      const nextRound = (game.current_round || 1) + 1;
       await supabase
         .from("games")
         .update({
           rounds: rounds as any,
           player1_score: player1Score,
           player2_score: player2Score,
-          current_round: (game.current_round || 1) + 1,
+          current_round: nextRound,
+          status: "in_progress", // Ensure status is in_progress during gameplay
         })
         .eq("id", gameId);
 
@@ -162,6 +164,21 @@ export async function POST(req: NextRequest) {
           player1Score,
           player2Score,
         });
+        
+        // Trigger next round start after a delay
+        // Use a promise wrapper to properly handle errors and track completion
+        setTimeout(() => {
+          triggerRoundStart(gameId, {
+            roundNumber: (game.current_round || 1) + 1,
+            score: {
+              player1: player1Score,
+              player2: player2Score,
+            },
+          }).catch((error) => {
+            console.error("Error triggering round start after delay:", error);
+            // Log error but don't throw - this is fire-and-forget for UX
+          });
+        }, 2000);
       }
     } else {
       // Update DB with partial round

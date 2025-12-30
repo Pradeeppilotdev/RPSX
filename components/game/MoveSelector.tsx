@@ -25,14 +25,14 @@ export function MoveSelector({ onMove, disabled }: MoveSelectorProps) {
         {moves.map(({ move, emoji, label }) => (
           <motion.div
             key={move}
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.95 }}
+            whileHover={disabled ? {} : { scale: 1.1 }}
+            whileTap={disabled ? {} : { scale: 0.95 }}
           >
             <Button
               variant="doodle"
-              onClick={() => onMove(move)}
+              onClick={() => !disabled && onMove(move)}
               disabled={disabled}
-              className="text-6xl px-8 py-12 border-4 border-black"
+              className="text-6xl px-8 py-12 border-4 border-black disabled:opacity-50 disabled:cursor-not-allowed"
               aria-label={label}
             >
               {emoji}

@@ -80,7 +80,7 @@ export function GameBoard() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
               >
-                <MoveSelector onMove={makeMove} />
+                <MoveSelector onMove={makeMove} disabled={!!currentMove || !!roundResult} />
               </motion.div>
             )}
           </AnimatePresence>
