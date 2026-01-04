@@ -96,13 +96,19 @@ export function useGame() {
     }
   };
 
-  // Separate effect for matchmaking subscription - independent of game state
+  // Separate effect for matchmaking subscription - unsubscribe when game is active
   useEffect(() => {
     if (!connected || !address) {
       return;
     }
 
-    // Subscribe to matchmaking once - this persists regardless of game state changes
+    // Don't subscribe to matchmaking if already in a game
+    // This prevents matchmaking events from overwriting active game state
+    if (currentGame?.id) {
+      return;
+    }
+
+    // Subscribe to matchmaking only when not in a game
     const unsubscribeMatchmaking = subscribeToMatchmaking({
       onMatched: (data: { gameId: string; opponent: any; stake: number }) => {
         const game: GameState = {
@@ -130,7 +136,7 @@ export function useGame() {
     return () => {
       unsubscribeMatchmaking();
     };
-  }, [connected, address, subscribeToMatchmaking, setCurrentGame, setIsInQueue]);
+  }, [connected, address, currentGame?.id, subscribeToMatchmaking, setCurrentGame, setIsInQueue]);
 
   // Separate effect for game subscription and polling - depends on game state
   useEffect(() => {
