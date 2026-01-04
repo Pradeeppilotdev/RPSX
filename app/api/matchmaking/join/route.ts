@@ -75,22 +75,21 @@ export async function POST(req: NextRequest) {
           console.error("Error creating user2:", createError);
           // If UNIQUE constraint violation, try with a unique negative value
           if (createError.code === '23505') {
-            // Generate a unique negative FID with entropy (timestamp + random) to handle concurrent requests
-            // Base hash from wallet address + timestamp + random ensures uniqueness per retry
+            // Base hash from wallet address (deterministic component for consistency)
             const baseHash = Math.abs(playerId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0));
-            const timestamp = Date.now();
-            const random = Math.floor(Math.random() * 10000);
-            const hashFid = -(baseHash + timestamp + random) % 1000000;
             
             // Retry with unique FID (with retry loop in case of collision)
+            // Always generate fresh entropy inside the loop to prevent concurrent request collisions
             let retryAttempts = 0;
             let retryUser = null;
             let retryError = null;
             
             while (retryAttempts < 3 && !retryUser) {
-              const uniqueFid = retryAttempts === 0 
-                ? hashFid 
-                : -(baseHash + Date.now() + Math.floor(Math.random() * 10000)) % 1000000;
+              // Generate fresh entropy for each attempt (including first) to ensure uniqueness
+              // Timestamp + random + attempt number ensures no collisions between concurrent requests
+              const timestamp = Date.now();
+              const random = Math.floor(Math.random() * 10000);
+              const uniqueFid = -(baseHash + timestamp + random + retryAttempts) % 1000000;
               
               const result = await supabase
                 .from("users")
@@ -210,22 +209,21 @@ export async function POST(req: NextRequest) {
         console.error("Error creating user:", createError);
         // If UNIQUE constraint violation, try with a unique negative value
         if (createError.code === '23505') {
-          // Generate a unique negative FID with entropy (timestamp + random) to handle concurrent requests
-          // Base hash from wallet address + timestamp + random ensures uniqueness per retry
+          // Base hash from wallet address (deterministic component for consistency)
           const baseHash = Math.abs(playerId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0));
-          const timestamp = Date.now();
-          const random = Math.floor(Math.random() * 10000);
-          const hashFid = -(baseHash + timestamp + random) % 1000000;
           
           // Retry with unique FID (with retry loop in case of collision)
+          // Always generate fresh entropy inside the loop to prevent concurrent request collisions
           let retryAttempts = 0;
           let retryUser = null;
           let retryError = null;
           
           while (retryAttempts < 3 && !retryUser) {
-            const uniqueFid = retryAttempts === 0 
-              ? hashFid 
-              : -(baseHash + Date.now() + Math.floor(Math.random() * 10000)) % 1000000;
+            // Generate fresh entropy for each attempt (including first) to ensure uniqueness
+            // Timestamp + random + attempt number ensures no collisions between concurrent requests
+            const timestamp = Date.now();
+            const random = Math.floor(Math.random() * 10000);
+            const uniqueFid = -(baseHash + timestamp + random + retryAttempts) % 1000000;
             
             const result = await supabase
               .from("users")
