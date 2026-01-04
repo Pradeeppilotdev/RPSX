@@ -75,25 +75,51 @@ export async function POST(req: NextRequest) {
           console.error("Error creating user2:", createError);
           // If UNIQUE constraint violation, try with a unique negative value
           if (createError.code === '23505') {
-            // Generate a unique negative FID based on wallet address hash
-            const hashFid = -(Math.abs(playerId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % 1000000);
-            const { data: retryUser, error: retryError } = await supabase
-              .from("users")
-              .insert({
-                wallet_address: playerId,
-                farcaster_fid: hashFid,
-                username: `Player_${playerId.slice(0, 6)}`,
-              })
-              .select()
-              .single();
+            // Generate a unique negative FID with entropy (timestamp + random) to handle concurrent requests
+            // Base hash from wallet address + timestamp + random ensures uniqueness per retry
+            const baseHash = Math.abs(playerId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0));
+            const timestamp = Date.now();
+            const random = Math.floor(Math.random() * 10000);
+            const hashFid = -(baseHash + timestamp + random) % 1000000;
             
-            if (retryError) {
+            // Retry with unique FID (with retry loop in case of collision)
+            let retryAttempts = 0;
+            let retryUser = null;
+            let retryError = null;
+            
+            while (retryAttempts < 3 && !retryUser) {
+              const uniqueFid = retryAttempts === 0 
+                ? hashFid 
+                : -(baseHash + Date.now() + Math.floor(Math.random() * 10000)) % 1000000;
+              
+              const result = await supabase
+                .from("users")
+                .insert({
+                  wallet_address: playerId,
+                  farcaster_fid: uniqueFid,
+                  username: `Player_${playerId.slice(0, 6)}`,
+                })
+                .select()
+                .single();
+              
+              if (result.error && result.error.code === '23505') {
+                retryAttempts++;
+                retryError = result.error;
+                continue; // Try again with new entropy
+              }
+              
+              retryUser = result.data;
+              retryError = result.error;
+              break;
+            }
+            
+            if (retryError || !retryUser) {
               return NextResponse.json(
-                { error: `Failed to create user: ${retryError.message}` },
+                { error: `Failed to create user after retries: ${retryError?.message || 'Unknown error'}` },
                 { status: 500 }
               );
             }
-            player2UserId = retryUser?.id;
+            player2UserId = retryUser.id;
           } else {
             return NextResponse.json(
               { error: `Failed to create user: ${createError.message}` },
@@ -184,25 +210,51 @@ export async function POST(req: NextRequest) {
         console.error("Error creating user:", createError);
         // If UNIQUE constraint violation, try with a unique negative value
         if (createError.code === '23505') {
-          // Generate a unique negative FID based on wallet address hash
-          const hashFid = -(Math.abs(playerId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % 1000000);
-          const { data: retryUser, error: retryError } = await supabase
-            .from("users")
-            .insert({
-              wallet_address: playerId,
-              farcaster_fid: hashFid,
-              username: `Player_${playerId.slice(0, 6)}`,
-            })
-            .select()
-            .single();
+          // Generate a unique negative FID with entropy (timestamp + random) to handle concurrent requests
+          // Base hash from wallet address + timestamp + random ensures uniqueness per retry
+          const baseHash = Math.abs(playerId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0));
+          const timestamp = Date.now();
+          const random = Math.floor(Math.random() * 10000);
+          const hashFid = -(baseHash + timestamp + random) % 1000000;
           
-          if (retryError) {
+          // Retry with unique FID (with retry loop in case of collision)
+          let retryAttempts = 0;
+          let retryUser = null;
+          let retryError = null;
+          
+          while (retryAttempts < 3 && !retryUser) {
+            const uniqueFid = retryAttempts === 0 
+              ? hashFid 
+              : -(baseHash + Date.now() + Math.floor(Math.random() * 10000)) % 1000000;
+            
+            const result = await supabase
+              .from("users")
+              .insert({
+                wallet_address: playerId,
+                farcaster_fid: uniqueFid,
+                username: `Player_${playerId.slice(0, 6)}`,
+              })
+              .select()
+              .single();
+            
+            if (result.error && result.error.code === '23505') {
+              retryAttempts++;
+              retryError = result.error;
+              continue; // Try again with new entropy
+            }
+            
+            retryUser = result.data;
+            retryError = result.error;
+            break;
+          }
+          
+          if (retryError || !retryUser) {
             return NextResponse.json(
-              { error: `Failed to create user: ${retryError.message}` },
+              { error: `Failed to create user after retries: ${retryError?.message || 'Unknown error'}` },
               { status: 500 }
             );
           }
-          userId = retryUser?.id;
+          userId = retryUser.id;
         } else {
           return NextResponse.json(
             { error: `Failed to create user: ${createError.message}` },
