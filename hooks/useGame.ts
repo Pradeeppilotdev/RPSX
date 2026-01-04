@@ -11,7 +11,6 @@ export function useGame() {
   const { pusher, connected, subscribeToGame, subscribeToMatchmaking } = usePusher();
   const { address } = useAccount();
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const quickPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const {
     currentGame,
     isInQueue,
@@ -24,6 +23,15 @@ export function useGame() {
     setRoundResult,
     resetGame,
   } = useGameStore();
+  
+  // Ref to always access the latest currentGame in event handlers
+  // This prevents stale closures when the effect doesn't re-run
+  const currentGameRef = useRef<GameState | null>(currentGame);
+  
+  // Keep ref in sync with currentGame
+  useEffect(() => {
+    currentGameRef.current = currentGame;
+  }, [currentGame]);
 
   // Polling function to fetch game state when Pusher isn't working
   const pollGameState = async (gameId: string) => {
@@ -37,13 +45,12 @@ export function useGame() {
       const gameData = await response.json();
       
       // Update game state from API
-      // Note: API already converts backend status ("in_progress", "completed") to frontend status ("playing", "finished")
       const updatedGame: GameState = {
         id: gameData.id,
         player1: gameData.player1,
         player2: gameData.player2,
         stake: gameData.stake,
-        status: gameData.status || "lobby", // Use status directly - API already converts it
+        status: gameData.status || "lobby",
         rounds: gameData.rounds || [],
         player1Score: gameData.player1Score || 0,
         player2Score: gameData.player2Score || 0,
@@ -56,7 +63,7 @@ export function useGame() {
       // Check if round result changed - look at the last completed round
       const lastRound = updatedGame.rounds[updatedGame.rounds.length - 1];
       if (lastRound && lastRound.winner) {
-        // Check if this is a new round result (different from current roundResult)
+        // Check if this is a new round result
         const isNewResult = !roundResult || 
           roundResult.roundNumber !== lastRound.roundNumber ||
           roundResult.winner !== lastRound.winner;
@@ -66,23 +73,14 @@ export function useGame() {
             player1Move: lastRound.player1Move,
             player2Move: lastRound.player2Move,
             winner: lastRound.winner,
-            // Fallback: rounds.length equals the last completed round number (1-indexed)
-            // currentRound is 0-indexed and equals rounds.length when a round is in progress
             roundNumber: lastRound.roundNumber || updatedGame.rounds.length,
           };
-          console.log("New round result detected:", result);
           setRoundResult(result);
-          setCurrentMove(null); // Clear move when round result is shown
+          setCurrentMove(null);
           
-          // Clear round result after 3 seconds to show next round
+          // Clear round result after 3 seconds
           setTimeout(() => {
             setRoundResult(null);
-            // If game is still in progress, poll again to get next round state
-            if (updatedGame.status === "playing") {
-              pollGameState(gameId).catch((error) => {
-                console.error("Error polling after round result clear:", error);
-              });
-            }
           }, 3000);
         }
       } else if (lastRound && !lastRound.winner && roundResult) {
@@ -98,18 +96,21 @@ export function useGame() {
     }
   };
 
+  // Separate effect for matchmaking subscription - independent of game state
   useEffect(() => {
-    // Set up Pusher subscriptions if connected
-    if (connected) {
-      // Subscribe to matchmaking
-      const unsubscribeMatchmaking = subscribeToMatchmaking({
+    if (!connected || !address) {
+      return;
+    }
+
+    // Subscribe to matchmaking once - this persists regardless of game state changes
+    const unsubscribeMatchmaking = subscribeToMatchmaking({
       onMatched: (data: { gameId: string; opponent: any; stake: number }) => {
         const game: GameState = {
           id: data.gameId,
           player1: address || "",
           player2: data.opponent,
           stake: data.stake,
-          status: "playing", // Start playing immediately when matched (consistent with API response)
+          status: "playing", // Consistent with API response
           rounds: [],
           player1Score: 0,
           player2Score: 0,
@@ -126,89 +127,99 @@ export function useGame() {
       },
     });
 
-    // Subscribe to game events if we have a game
-    if (currentGame?.id) {
-      const unsubscribeGame = subscribeToGame(currentGame.id, {
-        onRoundStart: (data: { roundNumber: number; score: any }) => {
-          if (currentGame) {
-            setCurrentGame({
-              ...currentGame,
-              // Convert 1-indexed roundNumber from backend to 0-indexed for frontend
-              currentRound: data.roundNumber - 1,
-              player1Score: data.score.player1,
-              player2Score: data.score.player2,
-              status: "playing",
-            });
-            setCurrentMove(null);
-            setRoundResult(null);
-          }
-        },
-        onRoundResult: (data: {
-          roundNumber: number;
-          player1Move: string;
-          player2Move: string;
-          winner: string;
-          player1Score: number;
-          player2Score: number;
-          gameEnd?: boolean;
-        }) => {
-          const result: RoundResult = {
-            player1Move: data.player1Move as any,
-            player2Move: data.player2Move as any,
-            winner: data.winner === "player1" ? "player1" : data.winner === "player2" ? "player2" : "draw",
-            roundNumber: data.roundNumber,
-          };
-          setRoundResult(result);
-          
-          if (currentGame) {
-            setCurrentGame({
-              ...currentGame,
-              player1Score: data.player1Score,
-              player2Score: data.player2Score,
-              rounds: [...currentGame.rounds, result],
-              status: data.gameEnd ? "finished" : "playing",
-            });
-          }
-        },
-        onGameEnd: (data: {
-          gameId: string;
-          winner: string;
-          loser: string;
-          finalScore: any;
-          rounds: any[];
-        }) => {
-          if (currentGame) {
-            setCurrentGame({
-              ...currentGame,
-              status: "finished",
-              winner: data.winner === currentGame.player1 ? "player1" : "player2",
-              finishedAt: Date.now(),
-            });
-          }
-        },
-      });
+    return () => {
+      unsubscribeMatchmaking();
+    };
+  }, [connected, address, subscribeToMatchmaking, setCurrentGame, setIsInQueue]);
 
-      return () => {
-        unsubscribeGame();
-        unsubscribeMatchmaking();
-        // Clean up quick poll interval if it exists
-        if (quickPollIntervalRef.current) {
-          clearInterval(quickPollIntervalRef.current);
-          quickPollIntervalRef.current = null;
-        }
-      };
-    }
+  // Separate effect for game subscription and polling - depends on game state
+  useEffect(() => {
+    if (connected) {
+      // Subscribe to game events if we have a game
+      if (currentGame?.id) {
+        const unsubscribeGame = subscribeToGame(currentGame.id, {
+          onRoundStart: (data: { roundNumber: number; score: any }) => {
+            // Use ref to get latest game state (avoids stale closure)
+            const latestGame = currentGameRef.current;
+            if (latestGame) {
+              setCurrentGame({
+                ...latestGame,
+                // Convert 1-indexed roundNumber from backend to 0-indexed for frontend
+                currentRound: data.roundNumber - 1,
+                player1Score: data.score.player1,
+                player2Score: data.score.player2,
+                status: "playing",
+              });
+              setCurrentMove(null);
+              setRoundResult(null);
+            }
+          },
+          onRoundResult: (data: {
+            roundNumber: number;
+            player1Move: string;
+            player2Move: string;
+            winner: string;
+            player1Score: number;
+            player2Score: number;
+            gameEnd?: boolean;
+          }) => {
+            const result: RoundResult = {
+              player1Move: data.player1Move as any,
+              player2Move: data.player2Move as any,
+              winner: data.winner === "player1" ? "player1" : data.winner === "player2" ? "player2" : "draw",
+              roundNumber: data.roundNumber,
+            };
+            setRoundResult(result);
+            
+            // Use ref to get latest game state (avoids stale closure)
+            const latestGame = currentGameRef.current;
+            if (latestGame) {
+              setCurrentGame({
+                ...latestGame,
+                player1Score: data.player1Score,
+                player2Score: data.player2Score,
+                rounds: [...latestGame.rounds, result],
+                status: data.gameEnd ? "finished" : "playing",
+              });
+            }
+          },
+          onGameEnd: (data: {
+            gameId: string;
+            winner: string;
+            loser: string;
+            finalScore: any;
+            rounds: any[];
+          }) => {
+            // Use ref to get latest game state (avoids stale closure)
+            const latestGame = currentGameRef.current;
+            if (latestGame) {
+              setCurrentGame({
+                ...latestGame,
+                status: "finished",
+                winner: data.winner === latestGame.player1 ? "player1" : "player2",
+                finishedAt: Date.now(),
+              });
+            }
+          },
+        });
 
-      return () => {
-        unsubscribeMatchmaking();
-        // Clean up quick poll interval if it exists
-        if (quickPollIntervalRef.current) {
-          clearInterval(quickPollIntervalRef.current);
-          quickPollIntervalRef.current = null;
+        return () => {
+          unsubscribeGame();
+          // Clean up polling interval if it exists
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
+        };
+      } else {
+        // Clean up polling interval when no game
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
         }
-      };
+      }
     } else {
-      // If Pusher not connected, set up polling fallback
+      // If Pusher not connected, set up polling fallback for active games
       if (currentGame?.id) {
         // Poll every 2 seconds when Pusher isn't working
         // Use a flag to prevent overlapping polls
@@ -235,15 +246,10 @@ export function useGame() {
             clearInterval(pollingIntervalRef.current);
             pollingIntervalRef.current = null;
           }
-          // Clean up quick poll interval if it exists
-          if (quickPollIntervalRef.current) {
-            clearInterval(quickPollIntervalRef.current);
-            quickPollIntervalRef.current = null;
-          }
         };
       }
     }
-  }, [connected, currentGame, subscribeToGame, subscribeToMatchmaking, setCurrentGame, setIsInQueue, setCurrentMove, setRoundResult, address, roundResult]);
+  }, [connected, currentGame?.id, subscribeToGame, setCurrentGame, setCurrentMove, setRoundResult, roundResult]);
 
   const joinQueue = async (stake: number) => {
     if (!address) {
@@ -252,40 +258,27 @@ export function useGame() {
       return;
     }
     
-    // Don't require Pusher connection - API will work regardless
-    // Pusher is only needed for real-time updates
-    
     try {
-      console.log("Joining matchmaking queue:", { stake, address });
-      setIsInQueue(true); // Optimistically set to true for better UX
-      
+      setIsInQueue(true); // Optimistically set for better UX
       const response = await joinMatchmakingQueue(stake, address);
       const data = await response.json();
       
       if (!response.ok) {
-        console.error("Failed to join queue:", {
-          status: response.status,
-          statusText: response.statusText,
-          data: data
-        });
+        console.error("Failed to join queue:", data);
         setIsInQueue(false);
-        const errorMsg = data?.error || data?.message || `HTTP ${response.status}: ${response.statusText}`;
-        alert(`Failed to join queue: ${errorMsg}`);
+        alert(`Failed to join queue: ${data.error || "Unknown error"}`);
         return;
       }
       
-      console.log("Queue join response:", data);
-      
-      // If matched immediately, update game state directly
+      // If matched immediately, update game state and clear queue status
+      // This ensures UI updates even if Pusher events are delayed or unavailable
       if (data.matched && data.gameId) {
-        console.log("Matched immediately!", data);
-        // Create game state immediately since we matched
         const game: GameState = {
           id: data.gameId,
           player1: address || "",
           player2: data.opponent || "Unknown",
           stake: stake,
-          status: "playing", // Start playing immediately when matched
+          status: "playing",
           rounds: [],
           player1Score: 0,
           player2Score: 0,
@@ -296,20 +289,9 @@ export function useGame() {
         };
         setCurrentGame(game);
         setIsInQueue(false);
-        
-        // Immediately poll game state to get the latest status
-        // Wrap in try-catch to handle errors silently (fire-and-forget for UX)
-        setTimeout(() => {
-          pollGameState(data.gameId).catch((error) => {
-            console.error("Error polling game state after match:", error);
-          });
-        }, 500);
-        
         // Pusher event will also trigger, but we set it immediately for better UX
-      } else {
-        console.log("Waiting for opponent...");
-        // Already set isInQueue to true above
       }
+      // If not matched, isInQueue remains true (waiting for opponent)
     } catch (error) {
       console.error("Error joining queue:", error);
       setIsInQueue(false);
@@ -319,8 +301,20 @@ export function useGame() {
 
   const leaveQueue = async () => {
     if (!address) return;
-    await leaveMatchmakingQueue(address);
-    setIsInQueue(false);
+    
+    try {
+      const response = await leaveMatchmakingQueue(address);
+      if (!response.ok) {
+        const data = await response.json();
+        console.error("Failed to leave queue:", data);
+        alert(`Failed to leave queue: ${data.error || "Unknown error"}`);
+        return;
+      }
+      setIsInQueue(false);
+    } catch (error) {
+      console.error("Error leaving queue:", error);
+      alert(`Error leaving queue: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
   };
 
   const makeMove = async (move: string) => {
@@ -330,88 +324,22 @@ export function useGame() {
     }
     
     try {
-      console.log("Making move:", { gameId: currentGame.id, move, address });
-      setCurrentMove(move as any); // Set immediately for better UX
-      
+      setCurrentMove(move as any); // Optimistically set for better UX
       const response = await sendMove(currentGame.id, move, address);
       const data = await response.json();
       
       if (!response.ok) {
         console.error("Move submission failed:", data);
-        alert(`Failed to submit move: ${data.error || "Unknown error"}`);
         setCurrentMove(null); // Clear move on error
+        alert(`Failed to submit move: ${data.error || "Unknown error"}`);
         return;
       }
       
-      console.log("Move submitted successfully:", data);
-      
-      // Immediately poll game state to get updates (especially if Pusher isn't working)
-      if (currentGame.id) {
-        await pollGameState(currentGame.id);
-      }
-      
-      // Set up a short polling interval after move to catch round results quickly
-      // Clear any existing intervals first
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
-        pollingIntervalRef.current = null;
-      }
-      if (quickPollIntervalRef.current) {
-        clearInterval(quickPollIntervalRef.current);
-        quickPollIntervalRef.current = null;
-      }
-      
-      // Poll more frequently after a move (every 500ms for 5 seconds)
-      // Use a flag to prevent overlapping polls
-      let pollCount = 0;
-      let isPolling = false;
-      quickPollIntervalRef.current = setInterval(() => {
-        // Prevent overlapping polls
-        if (isPolling) {
-          console.warn("Skipping poll - previous poll still in progress");
-          return;
-        }
-        
-        pollCount++;
-        if (currentGame?.id) {
-          isPolling = true;
-          pollGameState(currentGame.id)
-            .catch((error) => {
-              console.error("Error in quick poll:", error);
-            })
-            .finally(() => {
-              isPolling = false;
-            });
-        }
-        
-        if (pollCount >= 10) { // 10 * 500ms = 5 seconds
-          if (quickPollIntervalRef.current) {
-            clearInterval(quickPollIntervalRef.current);
-            quickPollIntervalRef.current = null;
-          }
-          // Resume normal polling if Pusher still not connected
-          if (!connected && currentGame?.id) {
-            let normalPolling = false;
-            pollingIntervalRef.current = setInterval(() => {
-              // Prevent overlapping normal polls too
-              if (normalPolling) return;
-              normalPolling = true;
-              pollGameState(currentGame.id)
-                .catch((error) => {
-                  console.error("Error in normal poll:", error);
-                })
-                .finally(() => {
-                  normalPolling = false;
-                });
-            }, 2000);
-          }
-        }
-      }, 500);
-      
+      // Move submitted successfully, Pusher events will handle state updates
     } catch (error) {
       console.error("Error making move:", error);
-      alert(`Error submitting move: ${error instanceof Error ? error.message : "Unknown error"}`);
       setCurrentMove(null); // Clear move on error
+      alert(`Error submitting move: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
