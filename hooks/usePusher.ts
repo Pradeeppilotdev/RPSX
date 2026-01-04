@@ -6,16 +6,10 @@ import type { GameCallbacks } from "@/lib/pusher/client";
 
 export function usePusher() {
   const [connected, setConnected] = useState(false);
-  const [errorLogged, setErrorLogged] = useState(false);
 
   useEffect(() => {
     // Check if Pusher is properly initialized
-    if (!pusher || typeof pusher.connection === 'undefined') {
-      // Only warn once, not on every render
-      if (!errorLogged) {
-        console.warn("Pusher not initialized - check NEXT_PUBLIC_PUSHER_KEY in .env.local");
-        setErrorLogged(true);
-      }
+    if (!pusher || !pusher.connection) {
       return;
     }
 
@@ -25,26 +19,23 @@ export function usePusher() {
     }
 
     pusher.connection.bind("connected", () => {
-      console.log("Pusher connected");
       setConnected(true);
-      setErrorLogged(false); // Reset error flag on successful connection
     });
 
     pusher.connection.bind("disconnected", () => {
-      console.log("Pusher disconnected");
       setConnected(false);
     });
 
     pusher.connection.bind("error", (err: any) => {
-      // Only log error once to avoid spam
-      if (!errorLogged) {
-        const errorType = err?.type || err?.error || "Unknown error";
-        // Don't log generic PusherError (common connection retry errors)
-        // Only log if it's a meaningful error
-        if (errorType !== "PusherError" || (err?.data?.code && err.data.code !== 1006)) {
-          console.warn("Pusher connection issue (real-time updates may be delayed). Game will still work via API.");
-        }
-        setErrorLogged(true);
+      // Log connection errors for debugging
+      // Filter out common retry errors (code 1006 = abnormal closure during connection)
+      const errorCode = err?.data?.code;
+      if (errorCode && errorCode !== 1006) {
+        console.warn("Pusher connection error:", {
+          type: err?.type || "Unknown",
+          code: errorCode,
+          message: err?.data?.message || err?.message || "Connection error",
+        });
       }
       setConnected(false);
     });
@@ -56,7 +47,7 @@ export function usePusher() {
         pusher.connection.unbind("error");
       }
     };
-  }, [errorLogged]);
+  }, []);
 
   return {
     pusher,
